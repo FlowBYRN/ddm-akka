@@ -65,6 +65,7 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
     public static class RegistrationMessage implements Message {
         private static final long serialVersionUID = -4025238529984914107L;
         ActorRef<DependencyWorker.Message> dependencyWorker;
+        ActorRef<LargeMessageProxy.Message> dependencyWorkerLargeMessageProxy;
     }
 
     @Getter
@@ -100,7 +101,9 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
         this.inputFiles = InputConfigurationSingleton.get().getInputFiles();
         this.tables = new ArrayList<Table>();
         this.taskQueue = new LinkedList<>();
+        this.taskTracking = new HashMap<>();
         this.inputReaders = new ArrayList<>(inputFiles.length);
+        this.workerProxys = new HashMap<>();
         for (int id = 0; id < this.inputFiles.length; id++)
             this.inputReaders.add(context.spawn(InputReader.create(id, this.inputFiles[id]), InputReader.DEFAULT_NAME + "_" + id));
         this.resultCollector = context.spawn(ResultCollector.create(), ResultCollector.DEFAULT_NAME);
@@ -121,6 +124,8 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
     private final File[] inputFiles;
     private List<Table> tables;
     private Queue<CandidatePair> taskQueue;
+    private HashMap<ActorRef<DependencyWorker.Message>, CandidatePair> taskTracking;
+    private HashMap<ActorRef<DependencyWorker.Message>, ActorRef<LargeMessageProxy.Message>> workerProxys;
     private int taskCounter = 0;
     private boolean finishedFillingQueue = false;
     private final List<ActorRef<InputReader.Message>> inputReaders;
@@ -198,7 +203,7 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
         if (!this.dependencyWorkers.contains(dependencyWorker)) {
             this.dependencyWorkers.add(dependencyWorker);
             this.getContext().watch(dependencyWorker);
-
+            this.workerProxys.put(dependencyWorker, message.getDependencyWorkerLargeMessageProxy());
             distributeNextTask(dependencyWorker);
         }
         return this;
@@ -206,6 +211,7 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 
     private Behavior<Message> handle(CompletionMessage message) {
         ActorRef<DependencyWorker.Message> dependencyWorker = message.getDependencyWorker();
+        taskTracking.remove(dependencyWorker);
 
         if (message.getResult() == -1) {
             this.taskQueue.add(new CandidatePair(message.getFirstTableIndex(), message.getFirstColumnName(), message.getSecondTableIndex(), message.getSecondColumnName()));
@@ -251,6 +257,9 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
     private Behavior<Message> handle(Terminated signal) {
         ActorRef<DependencyWorker.Message> dependencyWorker = signal.getRef().unsafeUpcast();
         this.dependencyWorkers.remove(dependencyWorker);
+        if (taskTracking.containsKey(dependencyWorker)){
+            taskQueue.add(taskTracking.get(dependencyWorker));
+        }
         return this;
     }
 
@@ -290,16 +299,16 @@ public class DependencyMiner extends AbstractBehavior<DependencyMiner.Message> {
 
             Column firstColumn = tables.get(pair.getFirstTableIndex()).getColumns().stream().filter(c -> c.getName().equals(pair.getFirstColumnName())).findFirst().orElse(null);
             Column secondColumn = tables.get(pair.getSecondTableIndex()).getColumns().stream().filter(c -> c.getName().equals(pair.getSecondColumnName())).findFirst().orElse(null);
-            DependencyWorker.TaskMessage task = new DependencyWorker.TaskMessage(
+            LargeMessageProxy.LargeMessage task = new DependencyWorker.TaskMessage(
                     largeMessageProxy,
                     firstColumn,
                     secondColumn,
                     taskCounter++);
-
-            worker.tell(task);
+            this.taskTracking.put(worker, pair);
+            this.largeMessageProxy.tell(new LargeMessageProxy.SendMessage(task, workerProxys.get(worker)));
             this.getContext().getLog().info(" task {} sent to worker", taskCounter);
 
-
         }
+
     }
 }
