@@ -25,7 +25,7 @@ public class DependencyWorker extends AbstractBehavior<DependencyWorker.Message>
 	// Actor Messages //
 	////////////////////
 
-	public interface Message extends AkkaSerializable {
+	public interface Message extends AkkaSerializable, LargeMessageProxy.LargeMessage {
 	}
 
 	@Getter
@@ -64,7 +64,6 @@ public class DependencyWorker extends AbstractBehavior<DependencyWorker.Message>
 
 		final ActorRef<Receptionist.Listing> listingResponseAdapter = context.messageAdapter(Receptionist.Listing.class, ReceptionistListingMessage::new);
 		context.getSystem().receptionist().tell(Receptionist.subscribe(DependencyMiner.dependencyMinerService, listingResponseAdapter));
-
 		this.largeMessageProxy = this.getContext().spawn(LargeMessageProxy.create(this.getContext().getSelf().unsafeUpcast()), LargeMessageProxy.DEFAULT_NAME);
 	}
 
@@ -89,7 +88,7 @@ public class DependencyWorker extends AbstractBehavior<DependencyWorker.Message>
 	private Behavior<Message> handle(ReceptionistListingMessage message) {
 		Set<ActorRef<DependencyMiner.Message>> dependencyMiners = message.getListing().getServiceInstances(DependencyMiner.dependencyMinerService);
 		for (ActorRef<DependencyMiner.Message> dependencyMiner : dependencyMiners)
-			dependencyMiner.tell(new DependencyMiner.RegistrationMessage(this.getContext().getSelf()));
+			dependencyMiner.tell(new DependencyMiner.RegistrationMessage(this.getContext().getSelf(), this.largeMessageProxy));
 		return this;
 	}
 
